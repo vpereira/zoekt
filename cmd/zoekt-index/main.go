@@ -16,6 +16,7 @@ package main
 
 import (
 	"flag"
+  "fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -57,6 +58,8 @@ func main() {
 
 	ignoreDirs := flag.String("ignore_dirs", ".git,.hg,.svn", "comma separated list of directories to ignore.")
 	indexDir := flag.String("index", build.DefaultDir, "directory for search indices")
+  repoCustomPrefix := flag.String("repo_custom_prefix","","custom prefix for repository name")
+
 	flag.Parse()
 
 	opts := build.Options{
@@ -64,6 +67,7 @@ func main() {
 		SizeMax:     *sizeMax,
 		ShardMax:    *shardLimit,
 		IndexDir:    *indexDir,
+    RepoCustomPrefix: *repoCustomPrefix,
 	}
 	opts.SetDefaults()
 
@@ -101,7 +105,14 @@ func indexArg(arg string, opts build.Options, ignore map[string]struct{}) error 
 	}
 
 	opts.RepoDir = dir
-	opts.RepositoryDescription.Name = filepath.Base(dir)
+
+  if opts.RepoCustomPrefix != "" {
+    opts.RepositoryDescription.Name = fmt.Sprintf("%s:%s", opts.RepoCustomPrefix,
+                                                  filepath.Base(dir))
+  } else {
+	   opts.RepositoryDescription.Name = filepath.Base(dir)
+  }
+
 	builder, err := build.NewBuilder(opts)
 	if err != nil {
 		return err

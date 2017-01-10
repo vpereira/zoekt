@@ -62,6 +62,8 @@ type Options struct {
 	// RepoDir is the path to the repository on the indexing machine.
 	RepoDir string
 
+  // RepoCustomPrefix if you want to add some custom prefix to the repo name
+  RepoCustomPrefix string
 	// Path to exuberant ctags binary to run
 	CTags string
 
