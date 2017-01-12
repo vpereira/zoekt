@@ -38,7 +38,11 @@ func (s *Server) formatResults(result *zoekt.SearchResult, localPrint bool) ([]*
 			fragmentMap[repo] = s.getTemplate(str)
 		}
 	}
+
+  // TODO:
+  // understand the original code :)
 	getFragment := func(repo string, linenum int) string {
+    /*
 		if tpl := fragmentMap[repo]; tpl != nil {
 			var buf bytes.Buffer
 			if err := tpl.Execute(&buf, map[string]string{
@@ -49,9 +53,13 @@ func (s *Server) formatResults(result *zoekt.SearchResult, localPrint bool) ([]*
 			}
 			return buf.String()
 		}
+
 		return ""
+    */
+    return strconv.Itoa(linenum)
 	}
-	getURL := func(repo, filename string, branches []string, version string) string {
+
+	getURL := func(repo, filename string, branches []string, version string, line int) string {
 		if localPrint {
 			v := make(url.Values)
 			v.Add("r", repo)
@@ -59,6 +67,7 @@ func (s *Server) formatResults(result *zoekt.SearchResult, localPrint bool) ([]*
 			if len(branches) > 0 {
 				v.Add("b", branches[0])
 			}
+      v.Add("line", strconv.Itoa(line))
 			return "print?" + v.Encode()
 		}
 
@@ -91,9 +100,9 @@ func (s *Server) formatResults(result *zoekt.SearchResult, localPrint bool) ([]*
 
 		if f.SubRepositoryName != "" {
 			fn := strings.TrimPrefix(fMatch.FileName[len(f.SubRepositoryPath):], "/")
-			fMatch.URL = getURL(f.SubRepositoryName, fn, f.Branches, f.Version)
+			fMatch.URL = getURL(f.SubRepositoryName, fn, f.Branches, f.Version,79)
 		} else {
-			fMatch.URL = getURL(f.Repository, f.FileName, f.Branches, f.Version)
+			fMatch.URL = getURL(f.Repository, f.FileName, f.Branches, f.Version,79)
 		}
 
 		for _, m := range f.LineMatches {

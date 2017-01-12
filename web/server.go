@@ -141,6 +141,11 @@ func NewMux(s *Server) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 
 	if s.HTML {
+    // TODO
+    // the path should be editable.
+    // as it is now, you have to start the webserver on this directory
+    fs := http.FileServer(http.Dir("static"))
+    mux.Handle("/static/", http.StripPrefix("/static/", fs))
 		mux.HandleFunc("/search", s.serveSearch)
 		mux.HandleFunc("/", s.serveSearchBox)
 		mux.HandleFunc("/about", s.serveAbout)
@@ -405,8 +410,15 @@ func (s *Server) servePrintErr(w http.ResponseWriter, r *http.Request) error {
 	queryStr := qvals.Get("q")
 	numStr := qvals.Get("num")
 	num, err := strconv.Atoi(numStr)
-	if err != nil || num <= 0 {
-		num = defaultNumResults
+
+  if err != nil || num <= 0 {
+    num = defaultNumResults
+  }
+
+  line, err := strconv.Atoi(qvals.Get("line"))
+  
+	if err != nil || line <= 0 {
+		line = 1
 	}
 
 	qs := []query.Q{
@@ -438,6 +450,7 @@ func (s *Server) servePrintErr(w http.ResponseWriter, r *http.Request) error {
 	d := PrintInput{
 		Name:    f.FileName,
 		Repo:    f.Repository,
+    Line:    line,
 		Content: string(f.Content),
 		Last: LastInput{
 			Query: queryStr,

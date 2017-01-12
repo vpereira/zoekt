@@ -180,12 +180,19 @@ To list repositories, try:
 
 	"print": `
   <head>
+    <link href="/static/prism.css" rel="stylesheet" />
     <title>{{.Repo}}:{{.Name}}</title>
   </head>
-<body>{{template "searchbox" .Last}}
+<body>
+<script src="/static/prism.js">
+</script>
+{{template "searchbox" .Last}}
  <hr>
 
-<pre>{{.Content}}
+<pre data-line={{.Line}}>
+ <code class="language-none line-numbers">
+ {{.Content}}
+ </code>
 </pre>`,
 
 	"about": `
