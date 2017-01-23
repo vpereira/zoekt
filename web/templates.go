@@ -181,7 +181,6 @@ To list repositories, try:
 	"print": `
   <head>
     <link href="/static/prism.css" rel="stylesheet" />
-    <link href="/static/prism-atom-dark.css" rel="stylesheet" />
     <title>{{.Repo}}:{{.Name}}</title>
   </head>
 <body>
