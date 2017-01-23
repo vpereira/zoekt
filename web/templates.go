@@ -181,15 +181,32 @@ To list repositories, try:
 	"print": `
   <head>
     <link href="/static/prism.css" rel="stylesheet" />
+    <link href="/static/prism-atom-dark.css" rel="stylesheet" />
     <title>{{.Repo}}:{{.Name}}</title>
   </head>
 <body>
+<script src="/static/jquery-3.1.1.min.js">
+</script>
+
+<script type="text/javascript">
+$( document ).ready(function() {
+    var hash = window.location.hash;
+    if(hash !== undefined) {
+      var fragID = hash.replace(/#/,'');
+      $('pre').attr('data-line', fragID).attr('id', fragID);
+      $('html,body').animate({scrollTop: $(hash).offset().top},'slow');
+      Prism.highlightAll();
+    }
+});
+
+</script>
 <script src="/static/prism.js">
 </script>
+
 {{template "searchbox" .Last}}
  <hr>
 
-<pre data-line={{.Line}}>
+<pre>
  <code class="language-none line-numbers">
  {{.Content}}
  </code>
@@ -200,7 +217,6 @@ To list repositories, try:
     <title>About <em>zoekt</em></title>
   </head>
 <body>
-
 <p>
   This is <a href="http://github.com/google/zoekt"><em>zoekt</em></a>,
   an open-source full text search engine.
