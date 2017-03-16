@@ -58,7 +58,7 @@ func main() {
 
 	ignoreDirs := flag.String("ignore_dirs", ".git,.hg,.svn", "comma separated list of directories to ignore.")
 	indexDir := flag.String("index", build.DefaultDir, "directory for search indices")
-  repoCustomPrefix := flag.String("repo_custom_prefix","","custom prefix for repository name")
+  	repoCustomPrefix := flag.String("repo_custom_prefix","UNKNOWN","custom prefix for repository name")
 
 	flag.Parse()
 
@@ -67,7 +67,7 @@ func main() {
 		SizeMax:     *sizeMax,
 		ShardMax:    *shardLimit,
 		IndexDir:    *indexDir,
-    RepoCustomPrefix: *repoCustomPrefix,
+    		RepoCustomPrefix: *repoCustomPrefix,
 	}
 	opts.SetDefaults()
 

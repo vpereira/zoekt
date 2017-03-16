@@ -62,8 +62,8 @@ type Options struct {
 	// RepoDir is the path to the repository on the indexing machine.
 	RepoDir string
 
-  // RepoCustomPrefix if you want to add some custom prefix to the repo name
-  RepoCustomPrefix string
+  	// RepoCustomPrefix if you want to add some custom prefix to the repo name
+  	RepoCustomPrefix string
 	// Path to exuberant ctags binary to run
 	CTags string
 
@@ -121,6 +121,9 @@ func (o *Options) SetDefaults() {
 	}
 	if o.ShardMax == 0 {
 		o.ShardMax = 128 << 20
+	}
+	if o.RepoCustomPrefix == "" {
+		o.RepoCustomPrefix = "UNKNOWN"
 	}
 }
 
