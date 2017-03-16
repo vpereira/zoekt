@@ -179,6 +179,7 @@ To list repositories, try:
 `,
 
 	"print": `
+<html>
   <head>
     <link href="/static/prism.css" rel="stylesheet" />
     <title>{{.Repo}}:{{.Name}}</title>
@@ -210,7 +211,6 @@ $( document ).ready(function() {
  {{.Content}}
  </code>
 </pre>`,
-
 	"about": `
   <head>
     <title>About <em>zoekt</em></title>

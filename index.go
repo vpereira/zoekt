@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"strings"
+	"unicode/utf8"
 
 	"github.com/google/zoekt/query"
 )
@@ -35,15 +35,19 @@ type indexData struct {
 
 	newlinesIndex    []uint32
 	docSectionsIndex []uint32
+	runeOffsets      []uint32
 
 	// offsets of file contents. Includes end of last file.
 	boundaries []uint32
 
-	fileEnds []uint32
+	fileEnds     []uint32
+	fileEndRunes []uint32
 
-	fileNameContent []byte
-	fileNameIndex   []uint32
-	fileNameNgrams  map[ngram][]uint32
+	fileNameContent     []byte
+	fileNameIndex       []uint32
+	fileNameNgrams      map[ngram][]uint32
+	fileNameRuneOffsets []uint32
+	fileNameEndRunes    []uint32
 
 	fileBranchMasks []uint32
 
@@ -71,6 +75,8 @@ func (d *indexData) memoryUse() int {
 	for _, a := range [][]uint32{
 		d.newlinesIndex, d.docSectionsIndex,
 		d.fileEnds, d.fileNameIndex, d.fileBranchMasks,
+		d.runeOffsets, d.fileNameRuneOffsets,
+		d.fileEndRunes, d.fileNameEndRunes,
 	} {
 		sz += 4 * len(a)
 	}
@@ -84,9 +90,9 @@ func (d *indexData) memoryUse() int {
 func (data *indexData) getDocIterator(q query.Q) (docIterator, error) {
 	switch s := q.(type) {
 	case *query.Substring:
-		if len(s.Pattern) < ngramSize {
+		if utf8.RuneCountInString(s.Pattern) < ngramSize {
 			if !s.FileName {
-				return nil, fmt.Errorf("pattern %q less than %d bytes", s.Pattern, ngramSize)
+				return nil, fmt.Errorf("pattern %q less than %d characters", s.Pattern, ngramSize)
 			}
 
 			return data.getBruteForceFileNameDocIterator(s), nil
@@ -134,8 +140,9 @@ func (data *indexData) matchAllDocIterator() docIterator {
 			substrBytes:   name,
 			substrLowered: name,
 			file:          uint32(i),
-			offset:        uint32(0),
-			matchSz:       uint32(len(name)),
+			runeOffset:    0,
+			byteOffset:    0,
+			byteMatchSz:   uint32(len(name)),
 		})
 	}
 	return &bruteForceIter{cands}
@@ -177,28 +184,13 @@ func (data *indexData) getBruteForceFileNameDocIterator(query *query.Substring) 
 			substrBytes:   []byte(query.Pattern),
 			substrLowered: lowerPat,
 			file:          uint32(fileID),
-			offset:        uint32(start - startName),
-			matchSz:       uint32(end - start),
+			// TODO - should also populate runeOffset?
+			byteOffset:  uint32(start - startName),
+			byteMatchSz: uint32(end - start),
 		})
 	}
 
 	return &bruteForceIter{cands}
-}
-
-func (data *indexData) getFileNameDocIterator(query *query.Substring) docIterator {
-	if len(query.Pattern) < ngramSize {
-		return data.getBruteForceFileNameDocIterator(query)
-	}
-	str := strings.ToLower(query.Pattern) // TODO - UTF-8
-	di := &ngramDocIterator{
-		query:    query,
-		distance: uint32(len(str)) - ngramSize,
-		ends:     data.fileNameIndex[1:],
-		first:    data.fileNameNgrams[stringToNGram(str[:ngramSize])],
-		last:     data.fileNameNgrams[stringToNGram(str[len(str)-ngramSize:])],
-	}
-
-	return di
 }
 
 const maxUInt32 = 0xffffffff
@@ -215,47 +207,6 @@ func minarg(xs []uint32) uint32 {
 	return uint32(j)
 }
 
-func hasCase(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-func flipCase(c byte) byte {
-	if c >= 'A' && c <= 'Z' {
-		return c - 'A' + 'a'
-	}
-	if c >= 'a' && c <= 'z' {
-		return c - 'a' + 'A'
-	}
-	return c
-}
-
-func generateCaseNgrams(g ngram) []ngram {
-	asBytes := ngramToBytes(g)
-
-	variants := make([]ngram, 0, 8)
-	seen := map[ngram]struct{}{}
-	for i := 0; i < (1 << ngramSize); i++ {
-		var variant [ngramSize]byte
-		for j := 0; j < ngramSize; j++ {
-			c := asBytes[j]
-			if i&(1<<uint(j)) != 0 {
-				if hasCase(c) {
-					c = flipCase(c)
-				}
-			}
-			variant[j] = c
-		}
-
-		next := bytesToNGram(variant[:])
-		if _, ok := seen[next]; !ok {
-			variants = append(variants, next)
-			seen[next] = struct{}{}
-		}
-	}
-
-	return variants
-}
-
 func (data *indexData) ngramFrequency(ng ngram, filename bool) uint32 {
 	if filename {
 		return uint32(len(data.fileNameNgrams[ng]))
@@ -270,28 +221,31 @@ func (data *indexData) getNgramDocIterator(query *query.Substring) (docIterator,
 	}
 
 	if query.FileName {
-		input.ends = data.fileNameIndex[1:]
+		input.ends = data.fileNameEndRunes
 	} else {
-		input.ends = data.fileEnds
+		input.ends = data.fileEndRunes
 	}
 
 	str := query.Pattern
 
 	// Find the 2 least common ngrams from the string.
-	frequencies := make([]uint32, len(str)-ngramSize+1)
-	for i := range frequencies {
-		ng := stringToNGram(str[i : i+ngramSize])
+	ngramOffs := splitNGrams([]byte(query.Pattern))
+	var frequencies []uint32
+	for _, o := range ngramOffs {
+		var freq uint32
 		if query.CaseSensitive {
-			frequencies[i] = data.ngramFrequency(ng, query.FileName)
+			freq = data.ngramFrequency(o.ngram, query.FileName)
 		} else {
-			for _, v := range generateCaseNgrams(ng) {
-				frequencies[i] += data.ngramFrequency(v, query.FileName)
+			for _, v := range generateCaseNgrams(o.ngram) {
+				freq += data.ngramFrequency(v, query.FileName)
 			}
 		}
 
-		if frequencies[i] == 0 {
+		if freq == 0 {
 			return input, nil
 		}
+
+		frequencies = append(frequencies, freq)
 	}
 
 	firstI := minarg(frequencies)
@@ -301,11 +255,11 @@ func (data *indexData) getNgramDocIterator(query *query.Substring) (docIterator,
 		lastI, firstI = firstI, lastI
 	}
 
-	firstNG := stringToNGram(str[firstI : firstI+ngramSize])
-	lastNG := stringToNGram(str[lastI : lastI+ngramSize])
+	firstNG := ngramOffs[firstI].ngram
+	lastNG := ngramOffs[lastI].ngram
 	input.distance = lastI - firstI
 	input.leftPad = firstI
-	input.rightPad = uint32(len(str)-ngramSize) - lastI
+	input.rightPad = uint32(utf8.RuneCountInString(str)-ngramSize) - lastI
 
 	postings, err := data.readPostings(firstNG, query.CaseSensitive, query.FileName)
 	if err != nil {
@@ -323,6 +277,8 @@ func (data *indexData) getNgramDocIterator(query *query.Substring) (docIterator,
 		input.last = input.first
 	}
 
+	input.ng1 = firstNG
+	input.ng2 = lastNG
 	if lastI-firstI <= ngramSize && input.leftPad == 0 && input.rightPad == 0 {
 		input._coversContent = true
 	}

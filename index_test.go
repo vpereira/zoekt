@@ -20,7 +20,10 @@ import (
 	"log"
 	"reflect"
 	"regexp/syntax"
+	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/context"
 
@@ -67,7 +70,7 @@ func TestBasic(t *testing.T) {
 		Document{
 			Name:    "f2",
 			Content: []byte("to carry water in the no later bla"),
-			// --------------------- 0123456789012345678901234567890123456789
+			// ------------- 0123456789012345678901234567890123456789
 		})
 
 	res := searchForTest(t, b, &query.Substring{Pattern: "water"})
@@ -185,7 +188,10 @@ func TestFileBasedSearch(t *testing.T) {
 	sres := searchForTest(t, b, &query.Substring{Pattern: "ananas"})
 
 	matches := sres.Files
-	if len(matches) != 2 || matches[0].FileName != "f2" || matches[1].FileName != "f1" {
+	if len(matches) != 2 {
+		t.Fatalf("got %v, want 2 matches", matches)
+	}
+	if matches[0].FileName != "f2" || matches[1].FileName != "f1" {
 		t.Fatalf("got %v, want matches {f1,f2}", matches)
 	}
 	if matches[0].LineMatches[0].LineFragments[0].Offset != 10 || matches[1].LineMatches[0].LineFragments[0].Offset != 8 {
@@ -1166,5 +1172,200 @@ func TestSearchEither(t *testing.T) {
 
 	if got, want := sres.Files[0].FileName, "f1"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestUnicodeExactMatch(t *testing.T) {
+	needle := "néédlÉ"
+	content := []byte("blá blá " + needle + " blâ")
+	// ----------------01234567    8
+	b := testIndexBuilder(t, nil,
+		Document{Name: "f1", Content: content})
+
+	if res := searchForTest(t, b, &query.Substring{Pattern: needle, CaseSensitive: true}); len(res.Files) != 1 {
+		t.Fatalf("case sensitive: got %v, wanted 1 match", res.Files)
+	}
+}
+
+func TestUnicodeCoverContent(t *testing.T) {
+	needle := "néédlÉ"
+	content := []byte("blá blá " + needle + " blâ")
+	b := testIndexBuilder(t, nil,
+		Document{Name: "f1", Content: content})
+
+	if res := searchForTest(t, b, &query.Substring{Pattern: "NÉÉDLÉ", CaseSensitive: true}); len(res.Files) != 0 {
+		t.Fatalf("case sensitive: got %v, wanted 0 match", res.Files)
+	}
+
+	res := searchForTest(t, b, &query.Substring{Pattern: "NÉÉDLÉ"})
+	if len(res.Files) != 1 {
+		t.Fatalf("case insensitive: got %v, wanted 1 match", res.Files)
+	}
+
+	if got, want := res.Files[0].LineMatches[0].LineFragments[0].Offset, uint32(strings.Index(string(content), needle)); got != want {
+		t.Errorf("got %d want %d", got, want)
+	}
+}
+
+func TestUnicodeNonCoverContent(t *testing.T) {
+	needle := "nééáádlÉ"
+	//---------01234567
+	content := []byte("blá blá " + needle + " blâ")
+	// ----------------01234567    8901234   5678
+	b := testIndexBuilder(t, nil,
+		Document{Name: "f1", Content: content})
+
+	res := searchForTest(t, b, &query.Substring{Pattern: "NÉÉÁÁDLÉ", Content: true})
+	if len(res.Files) != 1 {
+		t.Fatalf("got %v, wanted 1 match", res.Files)
+	}
+
+	if got, want := res.Files[0].LineMatches[0].LineFragments[0].Offset, uint32(strings.Index(string(content), needle)); got != want {
+		t.Errorf("got %d want %d", got, want)
+	}
+}
+
+func TestUnicodeVariableLength(t *testing.T) {
+	var lower, upper rune
+	var buf [4]byte
+	for l := rune(0); l < (1 << 21); l++ {
+		u := unicode.SimpleFold(l)
+
+		lSz := utf8.EncodeRune(buf[:], l)
+		uSz := utf8.EncodeRune(buf[:], u)
+
+		if lSz != uSz {
+			lower = l
+			upper = u
+			t.Logf("char %c (%d sz %d) %c (%d sz %d)", l, l, lSz, u, u, uSz)
+			break
+		}
+	}
+
+	if lower == 0 {
+		t.Fatal("rune not found")
+	}
+	needle := "nee" + string([]rune{lower}) + "eed"
+	corpus := []byte("nee" + string([]rune{upper}) + "eed" +
+		" ee" + string([]rune{lower}) + "ee" +
+		" ee" + string([]rune{upper}) + "ee")
+
+	b := testIndexBuilder(t, nil,
+		Document{Name: "f1", Content: []byte(corpus)})
+
+	res := searchForTest(t, b, &query.Substring{Pattern: needle, Content: true})
+	if len(res.Files) != 1 {
+		t.Fatalf("got %v, wanted 1 match", res.Files)
+	}
+}
+
+func TestShortUnicode(t *testing.T) {
+	world := "世界"
+	content := []byte("world = " + world)
+	// ----------------012345678901234
+	b := testIndexBuilder(t, nil,
+		Document{
+			Name:    "f1",
+			Content: content,
+		})
+	q := &query.Substring{Pattern: world}
+
+	searcher := searcherForTest(t, b)
+	var opts SearchOptions
+	_, err := searcher.Search(context.Background(), q, &opts)
+	if err == nil {
+		t.Error("search should have failed")
+	}
+}
+
+func TestUnicodeFileStartOffsets(t *testing.T) {
+	unicode := "世界"
+	wat := "waaaaaat"
+	b := testIndexBuilder(t, nil,
+		Document{
+			Name:    "f1",
+			Content: []byte(unicode),
+		},
+		Document{
+			Name:    "f2",
+			Content: []byte(wat),
+		},
+	)
+	q := &query.Substring{Pattern: wat, Content: true}
+	res := searchForTest(t, b, q)
+	if len(res.Files) != 1 {
+		t.Fatalf("got %v, wanted 1 match", res.Files)
+	}
+}
+
+func TestLongFileUTF8(t *testing.T) {
+	needle := "neeedle"
+
+	// 6 bytes.
+	unicode := "世界"
+	content := []byte(strings.Repeat(unicode, 100) + needle)
+	b := testIndexBuilder(t, nil,
+		Document{
+			Name:    "f1",
+			Content: []byte(strings.Repeat("a", 50)),
+		},
+		Document{
+			Name:    "f2",
+			Content: content,
+		})
+
+	q := &query.Substring{Pattern: needle, Content: true}
+	res := searchForTest(t, b, q)
+	if len(res.Files) != 1 {
+		t.Errorf("got %v, want 1 result", res)
+	}
+}
+
+func TestEstimateDocCount(t *testing.T) {
+	content := []byte("bla needle bla")
+	b := testIndexBuilder(t, &Repository{Name: "reponame"},
+		Document{Name: "f1", Content: content},
+		Document{Name: "f2", Content: content},
+	)
+
+	if sres := searchForTest(t, b,
+		query.NewAnd(
+			&query.Substring{Pattern: "needle"},
+			&query.Repo{Pattern: "reponame"},
+		), SearchOptions{
+			EstimateDocCount: true,
+		}); sres.Stats.ShardFilesConsidered != 2 {
+		t.Errorf("got FilesConsidered = %d, want 2", sres.Stats.FilesConsidered)
+	}
+	if sres := searchForTest(t, b,
+		query.NewAnd(
+			&query.Substring{Pattern: "needle"},
+			&query.Repo{Pattern: "nomatch"},
+		), SearchOptions{
+			EstimateDocCount: true,
+		}); sres.Stats.ShardFilesConsidered != 0 {
+		t.Errorf("got FilesConsidered = %d, want 0", sres.Stats.FilesConsidered)
+	}
+}
+
+func TestUTF8CorrectCorpus(t *testing.T) {
+	needle := "neeedle"
+
+	// 6 bytes.
+	unicode := "世界"
+	b := testIndexBuilder(t, nil,
+		Document{
+			Name:    "f1",
+			Content: []byte(strings.Repeat(unicode, 100)),
+		},
+		Document{
+			Name:    "xxxxxneeedle",
+			Content: []byte("hello"),
+		})
+
+	q := &query.Substring{Pattern: needle, FileName: true}
+	res := searchForTest(t, b, q)
+	if len(res.Files) != 1 {
+		t.Errorf("got %v, want 1 result", res)
 	}
 }

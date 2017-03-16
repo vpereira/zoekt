@@ -69,10 +69,10 @@ type LineMatch struct {
 
 // LineFragmentMatch a segment of matching text within a line.
 type LineFragmentMatch struct {
-	// Offset within the line.
+	// Offset within the line, in bytes.
 	LineOffset int
 
-	// Offset from file start
+	// Offset from file start, in bytes.
 	Offset uint32
 
 	// Number bytes that match.
@@ -92,6 +92,9 @@ type Stats struct {
 
 	// Number of files containing a match.
 	FileCount int
+
+	// Number of files in shards that we considered.
+	ShardFilesConsidered int
 
 	// Files that we evaluated. Equivalent to files for which all
 	// atom matches (including negations) evaluated to true.
@@ -123,6 +126,7 @@ func (s *Stats) Add(o Stats) {
 	s.FilesSkipped += o.FilesSkipped
 	s.MatchCount += o.MatchCount
 	s.NgramMatches += o.NgramMatches
+	s.ShardFilesConsidered += o.ShardFilesConsidered
 }
 
 // SearchResult contains search matches and extra data
@@ -229,6 +233,10 @@ type Searcher interface {
 }
 
 type SearchOptions struct {
+	// Return an upper-bound estimate of eligible documents in
+	// stats.ShardFilesConsidered.
+	EstimateDocCount bool
+
 	// Return the whole file.
 	Whole bool
 

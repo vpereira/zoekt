@@ -21,6 +21,7 @@ import (
 	"log"
 	"path/filepath"
 	"sort"
+	"unicode/utf8"
 )
 
 var _ = log.Println
@@ -30,33 +31,75 @@ const ngramSize = 3
 type searchableString struct {
 	// lower cased data.
 	data []byte
-
-	// offset of the content
-	offset uint32
 }
 
-func (e *searchableString) end() uint32 {
-	return e.offset + uint32(len(e.data))
+// Store character (unicode codepoint) offset (in bytes) this often.
+const runeOffsetFrequency = 100
+
+type postingsBuilder struct {
+	postings    map[ngram][]byte
+	lastOffsets map[ngram]uint32
+
+	// To support UTF-8 searching, we must map back runes to byte
+	// offsets. As a first attempt, we sample regularly. The
+	// precise offset can be found by walking from the recorded
+	// offset to the desired rune.  TODO(hanwen): disable the
+	// mapping if the index shard is 100% lo-bit ascii.
+	runeOffsets []uint32
+	runeCount   uint32
+
+	endRunes []uint32
+	endByte  uint32
 }
 
-func newSearchableString(data []byte, startOff uint32, postings map[ngram][]byte,
-	lastOffsets map[ngram]uint32) *searchableString {
+func newPostingsBuilder() *postingsBuilder {
+	return &postingsBuilder{
+		postings:    map[ngram][]byte{},
+		lastOffsets: map[ngram]uint32{},
+	}
+}
+
+func (s *postingsBuilder) newSearchableString(data []byte) *searchableString {
 	dest := searchableString{
-		offset: startOff,
-		data:   data,
+		data: data,
 	}
 	var buf [8]byte
-	for i := range dest.data {
-		if i+ngramSize > len(dest.data) {
-			break
+	var runeGram [3]rune
+
+	runeIndex := -1
+
+	dataSz := uint32(len(data))
+	i := 0
+
+	endRune := s.runeCount
+	for len(data) > 0 {
+		c, sz := utf8.DecodeRune(data)
+		data = data[sz:]
+
+		runeGram[0], runeGram[1], runeGram[2] = runeGram[1], runeGram[2], c
+		runeIndex++
+
+		s.runeCount++
+		if idx := s.runeCount - 1; idx%runeOffsetFrequency == 0 {
+			s.runeOffsets = append(s.runeOffsets, s.endByte+uint32(i))
 		}
-		ngram := bytesToNGram(dest.data[i : i+ngramSize])
-		lastOff := lastOffsets[ngram]
-		newOff := startOff + uint32(i)
+		i += sz
+
+		if runeIndex < 2 {
+			continue
+		}
+
+		ng := runesToNGram(runeGram)
+		lastOff := s.lastOffsets[ng]
+		newOff := endRune + uint32(runeIndex) - 2
+
 		m := binary.PutUvarint(buf[:], uint64(newOff-lastOff))
-		postings[ngram] = append(postings[ngram], buf[:m]...)
-		lastOffsets[ngram] = newOff
+		s.postings[ng] = append(s.postings[ng], buf[:m]...)
+		s.lastOffsets[ng] = newOff
 	}
+
+	s.endRunes = append(s.endRunes, s.runeCount)
+	s.endByte += dataSz
 	return &dest
 }
 
@@ -72,13 +115,8 @@ type IndexBuilder struct {
 	branchMasks []uint32
 	subRepos    []uint32
 
-	// ngram => posting.
-	contentPostings    map[ngram][]byte
-	contentLastOffsets map[ngram]uint32
-
-	// like postings, but for filenames
-	namePostings    map[ngram][]byte
-	nameLastOffsets map[ngram]uint32
+	contents *postingsBuilder
+	names    *postingsBuilder
 
 	// root repository
 	repo Repository
@@ -107,10 +145,8 @@ func (b *IndexBuilder) ContentSize() uint32 {
 // Repository contains repo metadata, and may be set to nil.
 func NewIndexBuilder(r *Repository) (*IndexBuilder, error) {
 	b := &IndexBuilder{
-		contentPostings:    make(map[ngram][]byte),
-		namePostings:       make(map[ngram][]byte),
-		contentLastOffsets: make(map[ngram]uint32),
-		nameLastOffsets:    make(map[ngram]uint32),
+		contents: newPostingsBuilder(),
+		names:    newPostingsBuilder(),
 	}
 
 	if r == nil {
@@ -122,8 +158,6 @@ func NewIndexBuilder(r *Repository) (*IndexBuilder, error) {
 	return b, nil
 }
 
-// setRepository adds repository metadata. The Branches field is
-// ignored.
 func (b *IndexBuilder) setRepository(desc *Repository) error {
 	if len(b.files) > 0 {
 		return fmt.Errorf("AddSubRepository called after adding files.")
@@ -195,11 +229,13 @@ func IsText(content []byte) bool {
 	trigrams := map[ngram]struct{}{}
 
 	lineSize := 0
-	for i := 0; i < len(content)-ngramSize; i++ {
-		if content[i] == 0 {
+
+	var cur [3]rune
+	for len(content) > 0 {
+		if content[0] == 0 {
 			return false
 		}
-		if content[i] == '\n' {
+		if content[0] == '\n' {
 			lineSize = 0
 		} else {
 			lineSize++
@@ -208,8 +244,19 @@ func IsText(content []byte) bool {
 			return false
 		}
 
-		trigrams[bytesToNGram(content[i:i+ngramSize])] = struct{}{}
+		r, sz := utf8.DecodeRune(content)
+		if r == utf8.RuneError {
+			return false
+		}
+		content = content[sz:]
 
+		cur[0], cur[1], cur[2] = cur[1], cur[2], r
+		if cur[0] == 0 {
+			// start of file.
+			continue
+		}
+
+		trigrams[runesToNGram(cur)] = struct{}{}
 		if len(trigrams) > maxTrigramCount {
 			// probably not text.
 			return false
@@ -270,12 +317,12 @@ func (b *IndexBuilder) Add(doc Document) error {
 
 	b.subRepos = append(b.subRepos, subRepoIdx)
 
-	b.files = append(b.files, newSearchableString(doc.Content, b.contentEnd, b.contentPostings, b.contentLastOffsets))
-	b.fileNames = append(b.fileNames, newSearchableString([]byte(doc.Name), b.nameEnd, b.namePostings, b.nameLastOffsets))
+	docStr := b.contents.newSearchableString(doc.Content)
+	b.files = append(b.files, docStr)
 
+	nameStr := b.names.newSearchableString([]byte(doc.Name))
+	b.fileNames = append(b.fileNames, nameStr)
 	b.docSections = append(b.docSections, doc.Symbols)
-	b.contentEnd += uint32(len(doc.Content))
-	b.nameEnd += uint32(len(doc.Name))
 
 	b.branchMasks = append(b.branchMasks, mask)
 	return nil

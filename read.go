@@ -65,7 +65,7 @@ func (r *reader) readTOC(toc *indexTOC) error {
 	secs := toc.sections()
 
 	if len(secs) != int(sectionCount) {
-		return fmt.Errorf("section count mismatch: got %d want %d", len(secs), sectionCount)
+		return fmt.Errorf("section count mismatch: got %d want %d", sectionCount, len(secs))
 	}
 
 	for _, s := range toc.sections() {
@@ -149,9 +149,11 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 	}
 	postingsIndex := toc.postings.absoluteIndex()
 
-	for i := 0; i < len(textContent); i += ngramSize {
-		j := i / ngramSize
-		d.ngrams[bytesToNGram(textContent[i:i+ngramSize])] = simpleSection{
+	const ngramEncoding = 8
+	for i := 0; i < len(textContent); i += ngramEncoding {
+		j := i / ngramEncoding
+		ng := ngram(binary.BigEndian.Uint64(textContent[i : i+ngramEncoding]))
+		d.ngrams[ng] = simpleSection{
 			postingsIndex[j],
 			postingsIndex[j+1] - postingsIndex[j],
 		}
@@ -183,12 +185,12 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 	}
 
 	fileNamePostingsIndex := toc.namePostings.relativeIndex()
-	for i := 0; i < len(nameNgramText); i += ngramSize {
-		j := i / ngramSize
+	for i := 0; i < len(nameNgramText); i += ngramEncoding {
+		j := i / ngramEncoding
 		off := fileNamePostingsIndex[j]
 		end := fileNamePostingsIndex[j+1]
-		ngram := bytesToNGram(nameNgramText[i : i+ngramSize])
-		d.fileNameNgrams[ngram] = fromDeltas(fileNamePostingsData[off:end], nil)
+		ng := ngram(binary.BigEndian.Uint64(nameNgramText[i : i+ngramEncoding]))
+		d.fileNameNgrams[ng] = fromDeltas(fileNamePostingsData[off:end], nil)
 	}
 
 	for j, br := range d.repoMetaData.Branches {
@@ -197,10 +199,18 @@ func (r *reader) readIndexData(toc *indexTOC) (*indexData, error) {
 		d.branchNames[id] = br.Name
 	}
 
-	if blob, err := d.readSectionBlob(toc.subRepos); err != nil {
-		return nil, err
-	} else {
-		d.subRepos = fromSizedDeltas(blob, nil)
+	for sect, dest := range map[simpleSection]*[]uint32{
+		toc.subRepos:        &d.subRepos,
+		toc.runeOffsets:     &d.runeOffsets,
+		toc.nameRuneOffsets: &d.fileNameRuneOffsets,
+		toc.nameEndRunes:    &d.fileNameEndRunes,
+		toc.fileEndRunes:    &d.fileEndRunes,
+	} {
+		if blob, err := d.readSectionBlob(sect); err != nil {
+			return nil, err
+		} else {
+			*dest = fromSizedDeltas(blob, nil)
+		}
 	}
 
 	var keys []string
@@ -247,6 +257,14 @@ func (d *indexData) readContents(i uint32) ([]byte, error) {
 		off: d.boundaries[i],
 		sz:  d.boundaries[i+1] - d.boundaries[i],
 	})
+}
+
+func (d *indexData) readContentSlice(off uint32, sz uint32) ([]byte, error) {
+	// TODO(hanwen): cap result if it is at the end of the content
+	// section.
+	return d.readSectionBlob(simpleSection{
+		off: d.boundaries[0] + off,
+		sz:  sz})
 }
 
 func (d *indexData) readNewlines(i uint32, buf []uint32) ([]uint32, error) {

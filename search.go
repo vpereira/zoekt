@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"log"
 	"sort"
+	"unicode/utf8"
 )
 
 var _ = log.Println
@@ -29,13 +30,14 @@ type contentProvider struct {
 	stats *Stats
 
 	// mutable
-	err      error
-	idx      uint32
-	_data    []byte
-	_nl      []uint32
-	_nlBuf   []uint32
-	_sects   []DocumentSection
-	fileSize uint32
+	err          error
+	idx          uint32
+	_data        []byte
+	_nl          []uint32
+	_nlBuf       []uint32
+	_runeOffsets []uint32
+	_sects       []DocumentSection
+	fileSize     uint32
 }
 
 func (p *contentProvider) setDocument(docID uint32) {
@@ -80,7 +82,52 @@ func (p *contentProvider) data(fileName bool) []byte {
 	return p._data
 }
 
+// Find offset in bytes (relative to corpus start) for an offset in
+// runes (relative to document start). If filename is set, the corpus
+// is the set of filenames, with the document being the name itself.
+func (p *contentProvider) findOffset(filename bool, r uint32) uint32 {
+	sample := p.id.runeOffsets
+	runeEnds := p.id.fileEndRunes
+	fileStartByte := p.id.boundaries[p.idx]
+	if filename {
+		sample = p.id.fileNameRuneOffsets
+		runeEnds = p.id.fileNameEndRunes
+		fileStartByte = p.id.fileNameIndex[p.idx]
+	}
+
+	absR := r
+	if p.idx > 0 {
+		absR += runeEnds[p.idx-1]
+	}
+
+	byteOff := sample[absR/runeOffsetFrequency]
+	left := absR % runeOffsetFrequency
+
+	var data []byte
+
+	if filename {
+		data = p.id.fileNameContent[byteOff:]
+	} else {
+		data, p.err = p.id.readContentSlice(byteOff, 3*runeOffsetFrequency)
+		if p.err != nil {
+			return 0
+		}
+	}
+	for left > 0 {
+		_, sz := utf8.DecodeRune(data)
+		byteOff += uint32(sz)
+		data = data[sz:]
+		left--
+	}
+
+	byteOff -= fileStartByte
+	return byteOff
+}
+
 func (p *contentProvider) matchContent(m *candidateMatch) bool {
+	if m.byteOffset == 0 && m.runeOffset > 0 {
+		m.byteOffset = p.findOffset(m.fileName, m.runeOffset)
+	}
 	return m.matchContent(p.data(m.fileName))
 }
 
@@ -95,9 +142,9 @@ func (p *contentProvider) fillMatches(ms []*candidateMatch) []LineMatch {
 
 		for _, m := range ms {
 			res.LineFragments = append(res.LineFragments, LineFragmentMatch{
-				LineOffset:  int(m.offset),
-				MatchLength: int(m.matchSz),
-				Offset:      m.offset,
+				LineOffset:  int(m.byteOffset),
+				MatchLength: int(m.byteMatchSz),
+				Offset:      m.byteOffset,
 			})
 
 			result = []LineMatch{res}
@@ -122,12 +169,12 @@ func (p *contentProvider) fillContentMatches(ms []*candidateMatch) []LineMatch {
 
 		var lineCands []*candidateMatch
 
-		endMatch := m.offset + m.matchSz
+		endMatch := m.byteOffset + m.byteMatchSz
 
 		for len(ms) > 0 {
 			m := ms[0]
-			if int(m.offset) <= lineEnd {
-				endMatch = m.offset + m.matchSz
+			if int(m.byteOffset) <= lineEnd {
+				endMatch = m.byteOffset + m.byteMatchSz
 				lineCands = append(lineCands, m)
 				ms = ms[1:]
 			} else {
@@ -140,7 +187,7 @@ func (p *contentProvider) fillContentMatches(ms []*candidateMatch) []LineMatch {
 				"%s %v infinite loop: num %d start,end %d,%d, offset %d",
 				p.id.fileName(p.idx), p.id.metaData,
 				num, lineStart, lineEnd,
-				m.offset)
+				m.byteOffset)
 		}
 
 		data := p.data(false)
@@ -167,15 +214,14 @@ func (p *contentProvider) fillContentMatches(ms []*candidateMatch) []LineMatch {
 
 		for _, m := range lineCands {
 			fragment := LineFragmentMatch{
-				Offset:      m.offset,
-				LineOffset:  int(m.offset) - lineStart,
-				MatchLength: int(m.matchSz),
+				Offset:      m.byteOffset,
+				LineOffset:  int(m.byteOffset) - lineStart,
+				MatchLength: int(m.byteMatchSz),
 			}
 			finalMatch.LineFragments = append(finalMatch.LineFragments, fragment)
 		}
 		result = append(result, finalMatch)
 	}
-
 	return result
 }
 
